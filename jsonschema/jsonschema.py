@@ -214,10 +214,8 @@ def produce_container(stmt):
                 logging.debug("keyword hit on: %s %s", child.keyword, child.arg)
                 if stmt.parent.keyword != "list":
                     result[arg]["properties"].update(producers[child.keyword](child))
-                    logging.debug("Arg {}".format(arg))
                 else:
                     result[arg]["properties"].update(producers[child.keyword](child))
-                    logging.debug("Arg {}".format(arg))
             else:
                 logging.debug("keyword miss on: %s %s", child.keyword, child.arg)
     logging.debug("In produce_container, returning %s", result)
@@ -226,7 +224,6 @@ def produce_container(stmt):
 
 def produce_choice(stmt):
     logging.debug("in produce_choice: %s %s", stmt.keyword, stmt.arg)
-
     result = {}
 
     # https://tools.ietf.org/html/rfc6020#section-7.9.2
@@ -279,7 +276,11 @@ def numeric_type_trans(dtype):
 
 def string_trans(stmt):
     logging.debug("in string_trans with stmt %s %s", stmt.keyword, stmt.arg)
-    result = {"type": "string"}
+    result = {"type": "string", "pattern": ""}
+    for string in stmt.search("pattern"):
+        result["pattern"] = string.arg
+    logging.debug("In string_trans for %s, returning %s", stmt.arg, result)
+    #result = {"type": "string"}
     return result
 
 def enumeration_trans(stmt):
