@@ -49,7 +49,7 @@ class JSONSchemaPlugin(plugin.PyangPlugin):
         root_stmt = modules[0]
         if ctx.opts.schema_debug:
             logging.basicConfig(level=logging.DEBUG)
-            print("")
+
         if ctx.opts.schema_path is not None:
             logging.debug("schema_path: %s", ctx.opts.schema_path)
             path = ctx.opts.schema_path
@@ -67,7 +67,8 @@ class JSONSchemaPlugin(plugin.PyangPlugin):
                   "$schema": "http://json-schema.org/draft-04/schema#",
                   "description": description_str,
                   "type": "object",
-                  "properties": {}}
+                  "properties": {}, 
+                  "additionalProperties": False}
 
         schema = produce_schema(root_stmt)
         result["properties"].update(schema)
@@ -147,33 +148,41 @@ def produce_type(type_stmt):
 def produce_leaf(stmt):
     logging.debug("in produce_leaf: %s %s", stmt.keyword, stmt.arg)
     arg = qualify_name(stmt)
-
+    if stmt.search_one('description') is None:
+        description = ''
+    else:
+        description = stmt.search_one('description').arg
     type_stmt = stmt.search_one('type')
     type_str = produce_type(type_stmt)
-
+    type_str['description'] = description
     return {arg: type_str}
+
 
 def produce_list(stmt):
     logging.debug("in produce_list: %s %s", stmt.keyword, stmt.arg)
     arg = qualify_name(stmt)
 
-    if stmt.parent.keyword != "list":
-        result = {arg: {"type": "array", "items": []}}
-    else:
-        result = {"type": "object", "properties": {arg: {"type": "array", "items": []}}}
-
+    children = {}
     if hasattr(stmt, 'i_children'):
-        for child in stmt.i_children:
-            if child.keyword in producers:
-                logging.debug("keyword hit on: %s %s", child.keyword, child.arg)
-                if stmt.parent.keyword != "list":
-                    result[arg]["items"].append(producers[child.keyword](child))
-                else:
-                    result["properties"][arg]["items"].append(producers[child.keyword](child))
+        for s in stmt.i_children:
+            if s.keyword in producers:
+                logging.debug("keyword hit on: %s %s", s.keyword, s.arg)
+                children.update(producers[s.keyword](s))
             else:
-                logging.debug("keyword miss on: %s %s", child.keyword, child.arg)
-    logging.debug("In produce_list for %s, returning %s", stmt.arg, result)
-    return result
+                logging.debug("keyword miss on: %s %s", s.keyword, s.arg)
+
+    res = {arg:
+           {"type": "array",
+            "items": {
+                "type": "object",
+                "properties": children,
+                "additionalProperties": False
+            },
+            "additionalProperties": False
+            }
+           }
+    logging.debug("In produce_list for %s, returning %s", stmt.arg, res)
+    return res
 
 def produce_leaf_list(stmt):
     logging.debug("in produce_leaf_list: %s %s", stmt.keyword, stmt.arg)
@@ -183,21 +192,21 @@ def produce_leaf_list(stmt):
 
     if types.is_base_type(type_id) or type_id in _other_type_trans_tbl:
         type_str = produce_type(type_stmt)
-        result = {arg: {"type": "array", "items": [type_str]}}
+        result = {arg: {"type": "array", "items": [type_str]}, "additionalProperties": False}
     else:
         logging.debug("Missing mapping of base type: %s %s, type: %s",
                       stmt.keyword, stmt.arg, type_id)
-        result = {arg: {"type": "array", "items": [{"type": "string"}]}}
+        result = {arg: {"type": "array", "items": [{"type": "string"}]}, "additionalProperties": False}
     return result
 
 def produce_container(stmt):
-    logging.debug("in produce_container: %s %s", stmt.keyword, stmt.arg)
+    logging.debug("in produce_container: %s %s %s", stmt.keyword, stmt.arg, stmt.i_module.arg)
     arg = qualify_name(stmt)
 
     if stmt.parent.keyword != "list":
-        result = {arg: {"type": "object", "properties": {}}}
+        result = {arg: {"type": "object", "properties": { }, "additionalProperties": False}}
     else:
-        result = {"type": "object", "properties": {arg:{"type": "object", "properties": {}}}}
+        result = {arg:{"type": "object", "properties": {}, "additionalProperties": False}}
 
     if hasattr(stmt, 'i_children'):
         for child in stmt.i_children:
@@ -205,12 +214,15 @@ def produce_container(stmt):
                 logging.debug("keyword hit on: %s %s", child.keyword, child.arg)
                 if stmt.parent.keyword != "list":
                     result[arg]["properties"].update(producers[child.keyword](child))
+                    logging.debug("Arg {}".format(arg))
                 else:
-                    result["properties"][arg]["properties"].update(producers[child.keyword](child))
+                    result[arg]["properties"].update(producers[child.keyword](child))
+                    logging.debug("Arg {}".format(arg))
             else:
                 logging.debug("keyword miss on: %s %s", child.keyword, child.arg)
     logging.debug("In produce_container, returning %s", result)
     return result
+
 
 def produce_choice(stmt):
     logging.debug("in produce_choice: %s %s", stmt.keyword, stmt.arg)
@@ -310,8 +322,14 @@ def instance_identifier_trans(stmt):
 
 def leafref_trans(stmt):
     logging.debug("in leafref_trans with stmt %s %s", stmt.keyword, stmt.arg)
-    # TODO: Need to resolve i_leafref_ptr here 
+    # TODO: Need to resolve i_leafref_ptr here
     result = {"type": "string"}
+    return result
+
+def decimal_trans(stmt):
+    logging.debug("in instance_identifier_trans with stmt %s %s", stmt.keyword, stmt.arg)
+    # TODO Check how to map the decimal64
+    result = {"type": "integer"}
     return result
 
 _other_type_trans_tbl = {
@@ -323,7 +341,8 @@ _other_type_trans_tbl = {
     "empty":                    empty_trans,
     "union":                    union_trans,
     "instance-identifier":      instance_identifier_trans,
-    "leafref":                  leafref_trans
+    "leafref":                  leafref_trans,
+    "decimal64":                decimal_trans
 }
 
 def other_type_trans(dtype, stmt):
@@ -335,12 +354,12 @@ def qualify_name(stmt):
     # top-level JSON object, and then also whenever the namespaces of the
     # data node and its parent node are different.  In all other cases, the
     # simple form of the member name MUST be used.
-    if stmt.parent.parent is None: # We're on top
-        pfx = stmt.i_module.arg
-        logging.debug("In qualify_name with: %s %s on top", stmt.keyword, stmt.arg)
-        return pfx + ":" + stmt.arg
-    if stmt.top.arg != stmt.parent.top.arg: # Parent node is different
-        pfx = stmt.top.arg
-        logging.debug("In qualify_name with: %s %s and parent is different", stmt.keyword, stmt.arg)
-        return pfx + ":" + stmt.arg
+    # if stmt.parent.parent is None: # We're on top
+    #     pfx = stmt.i_module.arg
+    #     logging.debug("In qualify_name with: %s %s on top", stmt.keyword, stmt.arg)
+    #     return pfx + ":" + stmt.arg
+    # if stmt.top.arg != stmt.parent.top.arg: # Parent node is different
+    #     pfx = stmt.top.arg
+    #     logging.debug("In qualify_name with: %s %s and parent is different", stmt.keyword, stmt.arg)
+    #     return pfx + ":" + stmt.arg
     return stmt.arg
